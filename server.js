@@ -22,14 +22,25 @@ app.use('/pcm2mp3', express.raw({
 }));
 
 // Создаём временную папку
-const tmpDir = '/tmp/uploads';
-if (!fs.existsSync(tmpDir)) {
-  fs.mkdirSync(tmpDir, { recursive: true });
+const audioUpload = '/tmp/audio-uploads';
+if (!fs.existsSync(audioUpload)) {
+  fs.mkdirSync(audioUpload, { recursive: true });
+}
+
+// Поддержка извлечения аудио из видео
+const videoUpload = multer({ 
+  dest: '/tmp/video-uploads/',
+  limits: { fileSize: 50 * 1024 * 1024 } // 50 МБ максимум
+});
+// Убедимся, что папка существует
+const videoDir = '/tmp/video-uploads';
+if (!fs.existsSync(videoDir)) {
+  fs.mkdirSync(videoDir, { recursive: true });
 }
 
 // Настройка multer: сохраняем как .ogg
 const storage = multer.diskStorage({
-  destination: tmpDir,
+  destination: audioUpload,
   filename: (req, file, cb) => {
     // Генерируем уникальное имя с расширением .ogg
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -75,6 +86,51 @@ app.post('/ogg2mp3', upload.single('audio'), async (req, res) => {
   } catch (error) {
     console.error('Conversion error:', error);
     res.status(500).send('Failed to convert audio');
+  }
+});
+
+app.post('/video2mp3', videoUpload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send('No video file provided');
+    }
+
+    const inputPath = req.file.path;
+    const outputPath = input_path => input_path.replace(/\.[^/.]+$/, "") + '.mp3';
+
+    const command = `ffmpeg -i "${inputPath}" -vn -ab 128k -ar 22050 -y "${outputPath(inputPath)}"`;
+
+    await new Promise((resolve, reject) => {
+      exec(command, (error, stdout, stderr) => {
+        console.log('Video2MP3 stdout:', stdout.trim());
+        console.error('Video2MP3 stderr:', stderr.trim());
+        if (error) {
+          reject(new Error(`FFmpeg failed: ${stderr || error.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    const mp3Path = outputPath(inputPath);
+    if (!fs.existsSync(mp3Path)) {
+      throw new Error('MP3 file was not created');
+    }
+    if (fs.statSync(mp3Path).size < 128) {
+      throw new Error('Audio track is empty or missing');
+    }
+    const mp3Buffer = fs.readFileSync(mp3Path);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', mp3Buffer.length);
+    res.send(mp3Buffer);
+
+    // Cleanup
+    fs.unlinkSync(inputPath);
+    fs.unlinkSync(mp3Path);
+
+  } catch (error) {
+    console.error('Video2MP3 error:', error);
+    res.status(500).send(`Extraction failed: ${error.message}`);
   }
 });
 
