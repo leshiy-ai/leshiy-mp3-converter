@@ -15,8 +15,10 @@ app.post('/convert', upload.single('audio'), async (req, res) => {
     const outputPath = inputPath + '.mp3';
 
     // Конвертируем OGG → MP3
-    const command = `ffmpeg -i "${inputPath}" -ar 22050 -ac 1 -b:a 64k "${outputPath}"`;
-    await exec(command);
+    const command = `ffmpeg -i "${inputPath}" -ar 22050 -ac 1 -b:a 64k "${outputPath}" 2>&1`;
+    const { stdout, stderr } = await exec(command);
+    console.log('FFmpeg output:', stdout);
+    console.error('FFmpeg errors:', stderr);
 
     // Проверяем, что файл создан
     if (!fs.existsSync(outputPath)) {
