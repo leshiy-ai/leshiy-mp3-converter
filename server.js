@@ -15,6 +15,12 @@ app.get('/debug', (req, res) => {
   });
 });
 
+// Middleware для обработки сырых бинарных данных (PCM)
+app.use('/pcm2mp3', express.raw({ 
+  type: 'application/octet-stream',
+  limit: '20mb' // лимит размера PCM
+}));
+
 // Создаём временную папку
 const tmpDir = '/tmp/uploads';
 if (!fs.existsSync(tmpDir)) {
@@ -33,7 +39,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-app.post('/convert', upload.single('audio'), async (req, res) => {
+app.post('/ogg2mp3', upload.single('audio'), async (req, res) => {
   try {
     const inputPath = req.file.path; // Теперь это .../voice-12345.ogg
     const outputPath = inputPath.replace('.ogg', '.mp3');
@@ -72,8 +78,72 @@ app.post('/convert', upload.single('audio'), async (req, res) => {
   }
 });
 
+app.post('/pcm2mp3', async (req, res) => {
+  try {
+    // req.body — это Buffer с сырыми PCM-данными
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).send('Empty PCM data');
+    }
+
+    // Параметры по умолчанию (подстройте под ваш TTS)
+    const sampleRate = parseInt(req.query.sampleRate) || 24000;
+    const channels = parseInt(req.query.channels) || 1;
+    const format = req.query.format || 's16le'; // signed 16-bit little-endian
+
+    // Проверяем допустимые значения
+    if (![8000, 16000, 22050, 24000, 44100, 48000].includes(sampleRate)) {
+      return res.status(400).send('Invalid sampleRate');
+    }
+    if (![1, 2].includes(channels)) {
+      return res.status(400).send('Invalid channels (must be 1 or 2)');
+    }
+    if (!['s16le', 's16be', 'f32le'].includes(format)) {
+      return res.status(400).send('Unsupported format (use s16le, s16be, f32le)');
+    }
+
+    // Сохраняем PCM во временный файл
+    const inputPath = `/tmp/pcm-${Date.now()}.raw`;
+    const outputPath = inputPath.replace('.raw', '.mp3');
+
+    fs.writeFileSync(inputPath, req.body);
+
+    // Команда FFmpeg
+    const command = `ffmpeg -f ${format} -ar ${sampleRate} -ac ${channels} -i "${inputPath}" -b:a 64k "${outputPath}"`;
+
+    // Выполняем
+    await new Promise((resolve, reject) => {
+      exec(command, (error, stdout, stderr) => {
+        console.log('PCM → MP3 stdout:', stdout.trim());
+        console.error('PCM → MP3 stderr:', stderr.trim());
+        if (error) {
+          reject(new Error(`FFmpeg failed: ${stderr || error.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('MP3 file not created');
+    }
+
+    const mp3Buffer = fs.readFileSync(outputPath);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', mp3Buffer.length);
+    res.send(mp3Buffer);
+
+    // Cleanup
+    fs.unlinkSync(inputPath);
+    fs.unlinkSync(outputPath);
+
+  } catch (error) {
+    console.error('PCM conversion error:', error);
+    res.status(500).send(`Conversion failed: ${error.message}`);
+  }
+});
+
 app.get('/', (req, res) => {
-  res.send('OGG → MP3 converter is ready!');
+  res.send('Leshiy MP3 converter is ready!');
 });
 
 const port = process.env.PORT || 3000;
