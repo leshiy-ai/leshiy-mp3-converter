@@ -37,6 +37,15 @@ const videoDir = '/tmp/video-uploads';
 if (!fs.existsSync(videoDir)) {
   fs.mkdirSync(videoDir, { recursive: true });
 }
+// Реализуем поворот фотографии
+const rotateUpload = multer({ 
+  dest: '/tmp/rotate/',
+  limits: { fileSize: 10 * 1024 * 1024 } // 10 МБ
+});
+const rotateDir = '/tmp/rotate';
+if (!fs.existsSync(rotateDir)) {
+  fs.mkdirSync(rotateDir, { recursive: true });
+}
 
 // Настройка multer: сохраняем как .ogg
 const storage = multer.diskStorage({
@@ -86,6 +95,62 @@ app.post('/ogg2mp3', upload.single('audio'), async (req, res) => {
   } catch (error) {
     console.error('Conversion error:', error);
     res.status(500).send('Failed to convert audio');
+  }
+});
+
+app.post('/rotate', rotateUpload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send('No image provided');
+    }
+
+    const angle = req.query.angle; // '90', '-90', '180'
+    if (!['90', '-90', '180'].includes(angle)) {
+      return res.status(400).send('Invalid angle: use 90, -90, or 180');
+    }
+
+    const inputPath = req.file.path;
+    const ext = path.extname(req.file.originalname).toLowerCase() || '.jpg';
+    const outputPath = `/tmp/rotated-${Date.now()}${ext}`;
+
+    let vf;
+    if (angle === '90') {
+      vf = 'transpose=1';
+    } else if (angle === '-90') {
+      vf = 'transpose=2';
+    } else if (angle === '180') {
+      vf = 'hflip,vflip';
+    }
+
+    const command = `ffmpeg -i "${inputPath}" -vf "${vf}" -y "${outputPath}"`;
+
+    await new Promise((resolve, reject) => {
+      exec(command, (error, stdout, stderr) => {
+        if (error) {
+          console.error('FFmpeg rotate error:', stderr);
+          reject(new Error('Rotation failed'));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('Output image not created');
+    }
+
+    const imgBuffer = fs.readFileSync(outputPath);
+    const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
+    res.setHeader('Content-Type', mimeType);
+    res.send(imgBuffer);
+
+    // Cleanup
+    fs.unlinkSync(inputPath);
+    fs.unlinkSync(outputPath);
+
+  } catch (error) {
+    console.error('Rotate error:', error);
+    res.status(500).send('Image rotation failed');
   }
 });
 
