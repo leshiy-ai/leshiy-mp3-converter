@@ -65,11 +65,22 @@ const videoToImageUpload = multer({
   dest: '/tmp/video2image/',
   limits: { fileSize: 50 * 1024 * 1024 }
 });
-
 const videoToImageDir = '/tmp/video2image';
 if (!fs.existsSync(videoToImageDir)) {
   fs.mkdirSync(videoToImageDir, { recursive: true });
 }
+
+// Видео в GIF
+const gifUpload = multer({ 
+  dest: '/tmp/gif/',
+  limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+// GIF в видео
+const gifToVideoUpload = multer({ 
+  dest: '/tmp/gif2video/',
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 МБ — макс. размер GIF
+});
 
 // Настройка multer: сохраняем как .ogg
 const storage = multer.diskStorage({
@@ -426,6 +437,115 @@ app.post('/pcm2mp3', async (req, res) => {
 
   } catch (error) {
     console.error('PCM conversion error:', error);
+    res.status(500).send(`Conversion failed: ${error.message}`);
+  }
+});
+
+app.post('/video2gif', gifUpload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send('No video provided');
+    }
+
+    // Параметры
+    const start = req.query.start || '0';        // в секундах или 00:00:01
+    const end = req.query.end;                   // обязательный
+    const format = (req.query.format || 'gif').toLowerCase(); // 'gif' или 'mp4'
+    const fps = parseInt(req.query.fps) || 10;
+    const width = parseInt(req.query.width) || 480;
+
+    if (!end) {
+      return res.status(400).send('Missing "end" parameter');
+    }
+
+    const inputPath = req.file.path;
+    const outputPath = `/tmp/output-${Date.now()}.${format === 'mp4' ? 'mp4' : 'gif'}`;
+
+    let command;
+    if (format === 'mp4') {
+      // Видео-стикер: без звука, 480p, 30fps
+      command = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -an -vf "fps=${fps},scale=${width}:-1" -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`;
+    } else {
+      // GIF: двухпроходная генерация для качества
+      const palette = `/tmp/palette-${Date.now()}.png`;
+      const genPalette = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -vf "fps=${fps},scale=${width}:-1:flags=lanczos,palettegen" -y "${palette}"`;
+      const genGif = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -i "${palette}" -lavfi "fps=${fps},scale=${width}:-1:flags=lanczos [x]; [x][1:v] paletteuse" -y "${outputPath}"`;
+
+      await new Promise((resolve, reject) => {
+        exec(genPalette, (e1, _, stderr1) => {
+          if (e1) {
+            fs.existsSync(palette) && fs.unlinkSync(palette);
+            reject(new Error(`Palette failed: ${stderr1}`));
+          } else {
+            exec(genGif, (e2, _, stderr2) => {
+              fs.existsSync(palette) && fs.unlinkSync(palette);
+              if (e2) reject(new Error(`GIF failed: ${stderr2}`));
+              else resolve();
+            });
+          }
+        });
+      });
+    }
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('Output file not created');
+    }
+
+    const buffer = fs.readFileSync(outputPath);
+    const contentType = format === 'mp4' ? 'video/mp4' : 'image/gif';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+
+    // Cleanup
+    fs.unlinkSync(inputPath);
+    fs.unlinkSync(outputPath);
+
+  } catch (error) {
+    console.error('GIF/Sticker error:', error);
+    res.status(500).send(`Conversion failed: ${error.message}`);
+  }
+});
+
+app.post('/gif2video', gifToVideoUpload.single('gif'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).send('No GIF provided');
+    }
+
+    const inputPath = req.file.path;
+    const outputPath = `/tmp/converted-${Date.now()}.mp4`;
+
+    // Конвертация GIF → MP4 (без звука, оптимизировано)
+    const command = `ffmpeg -i "${inputPath}" -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -r 15 -y "${outputPath}"`;
+
+    await new Promise((resolve, reject) => {
+      exec(command, (error, stdout, stderr) => {
+        if (error) {
+          console.error('GIF→MP4 error:', stderr);
+          reject(new Error(`FFmpeg failed: ${stderr}`));
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('MP4 file not created');
+    }
+
+    const videoBuffer = fs.readFileSync(outputPath);
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', videoBuffer.length);
+    res.send(videoBuffer);
+
+    // Cleanup
+    fs.unlinkSync(inputPath);
+    fs.unlinkSync(outputPath);
+
+  } catch (error) {
+    console.error('GIF2Video error:', error);
     res.status(500).send(`Conversion failed: ${error.message}`);
   }
 });
