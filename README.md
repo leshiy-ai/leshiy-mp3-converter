@@ -9,7 +9,7 @@
 
 ---
 
-## 🔗 [URL сервиса](https://leshiy-mp3-converter.onrender.com)
+## 🔗 [URL сервиса](https://leshiy-media-converter.onrender.com)
 
 ---
 
