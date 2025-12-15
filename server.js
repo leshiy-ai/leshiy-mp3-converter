@@ -612,3 +612,8 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received — gracefully shutting down');
+  // Можно закрыть сервер, но на Render это не обязательно
+  process.exit(0);
+});
