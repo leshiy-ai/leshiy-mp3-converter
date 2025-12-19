@@ -424,57 +424,130 @@ app.post('/pcm2mp3', async (req, res) => {
 });
 
 // Видео в GIF
-const gifUpload = multer({ 
-  dest: '/tmp/gif/',
+const { spawn } = require('child_process');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+
+// Гарантированно безопасные пути
+const TMP_DIR = os.tmpdir();
+const UPLOAD_DIR = path.join(TMP_DIR, 'gif');
+const OUTPUT_DIR = path.join(TMP_DIR, 'video2gif');
+
+// Создаём директории, если их нет
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+const gifUpload = multer({
+  dest: UPLOAD_DIR,
   limits: { fileSize: 50 * 1024 * 1024 }
 });
+
 app.post('/video2gif', gifUpload.single('video'), async (req, res) => {
+  let inputPath = null;
+  let outputPath = null;
+  let palettePath = null;
+
+  const cleanup = () => {
+    if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    if (palettePath && fs.existsSync(palettePath)) fs.unlinkSync(palettePath);
+  };
+
   try {
     if (!req.file) {
       return res.status(400).send('No video provided');
     }
+    inputPath = req.file.path;
 
     // Параметры
-    const start = req.query.start || '0';        // в секундах или 00:00:01
-    const end = req.query.end;                   // обязательный
-    const format = (req.query.format || 'gif').toLowerCase(); // 'gif' или 'mp4'
-    const fps = parseInt(req.query.fps) || 10;
-    const width = parseInt(req.query.width) || 480;
+    const start = req.query.start || '0';
+    const end = req.query.end;
+    const format = (req.query.format || 'gif').toLowerCase();
+    const fps = Math.min(Math.max(parseInt(req.query.fps) || 10, 1), 30);
+    const width = Math.min(Math.max(parseInt(req.query.width) || 480, 100), 1280);
 
     if (!end) {
       return res.status(400).send('Missing "end" parameter');
     }
 
-    const inputPath = req.file.path;
-    const outputPath = `/tmp/output-${Date.now()}.${format === 'mp4' ? 'mp4' : 'gif'}`;
+    const startSec = parseFloat(start);
+    const endSec = parseFloat(end);
+    if (isNaN(startSec) || isNaN(endSec) || endSec <= startSec) {
+      return res.status(400).send('Invalid start or end time');
+    }
 
-    let command;
+    const duration = endSec - startSec;
+    if (duration > 5 || duration <= 0) {
+      return res.status(400).send('Duration must be between 0.1 and 5 seconds');
+    }
+
+    // Гарантированно безопасный путь для выходного файла
+    outputPath = path.join(OUTPUT_DIR, `output-${Date.now()}.${format === 'mp4' ? 'mp4' : 'gif'}`);
+
     if (format === 'mp4') {
-      // Ограничиваем длительность (Telegram: стикеры ≤ 3 сек)
-      const startSec = parseFloat(start);
-      const endSec = parseFloat(end);
-      if (endSec <= startSec || endSec - startSec > 5) {
-        return res.status(400).send('Invalid start/end or duration > 5 sec');
-      }
-      command = `ffmpeg -ss ${start} -to ${end} -i "${inputPath}" -an -vf "fps=${fps},scale=${width}:-2" -c:v libx264 -pix_fmt yuv420p -preset superfast -y "${outputPath}"`;
-    } else {
-      // GIF: двухпроходная генерация для качества
-      const palette = `/tmp/palette-${Date.now()}.png`;
-      const genPalette = `ffmpeg -ss ${start} -t 5 -i "${inputPath}" -vf "fps=${fps},scale=${width}:-1:flags=lanczos,palettegen" -y "${palette}"`;
-      const genGif = `ffmpeg -ss ${start} -t 5 -i "${inputPath}" -i "${palette}" -lavfi "fps=${fps},scale=${width}:-1:flags=lanczos [x]; [x][1:v] paletteuse" -y "${outputPath}"`;
-
+      // MP4: видео-стикер для Telegram
+      const args = [
+        '-ss', start.toString(),
+        '-to', end.toString(),
+        '-i', inputPath,
+        '-an',
+        '-vf', `fps=${fps},scale=${width}:-2`,
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'superfast',
+        '-y',
+        outputPath
+      ];
       await new Promise((resolve, reject) => {
-        exec(genPalette, (e1, _, stderr1) => {
-          if (e1) {
-            fs.existsSync(palette) && fs.unlinkSync(palette);
-            reject(new Error(`Palette failed: ${stderr1}`));
-          } else {
-            exec(genGif, (e2, _, stderr2) => {
-              fs.existsSync(palette) && fs.unlinkSync(palette);
-              if (e2) reject(new Error(`GIF failed: ${stderr2}`));
-              else resolve();
-            });
-          }
+        const ffmpeg = spawn('ffmpeg', args);
+        let stderr = '';
+        ffmpeg.stderr.on('data', (data) => stderr += data.toString());
+        ffmpeg.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg MP4 failed: ${stderr}`));
+        });
+      });
+    } else {
+      // GIF: двухпроходная генерация
+      palettePath = path.join(OUTPUT_DIR, `palette-${Date.now()}.png`);
+      
+      // Проход 1: генерация палитры
+      const args1 = [
+        '-ss', start.toString(),
+        '-t', duration.toString(),
+        '-i', inputPath,
+        '-vf', `fps=${fps},scale=${width}:-1:flags=lanczos,palettegen`,
+        '-y',
+        palettePath
+      ];
+      await new Promise((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', args1);
+        let stderr = '';
+        ffmpeg.stderr.on('data', (data) => stderr += data.toString());
+        ffmpeg.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg palette failed: ${stderr}`));
+        });
+      });
+
+      // Проход 2: применение палитры
+      const args2 = [
+        '-ss', start.toString(),
+        '-t', duration.toString(),
+        '-i', inputPath,
+        '-i', palettePath,
+        '-lavfi', `fps=${fps},scale=${width}:-1:flags=lanczos [x]; [x][1:v] paletteuse`,
+        '-y',
+        outputPath
+      ];
+      await new Promise((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', args2);
+        let stderr = '';
+        ffmpeg.stderr.on('data', (data) => stderr += data.toString());
+        ffmpeg.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg GIF failed: ${stderr}`));
         });
       });
     }
@@ -490,13 +563,11 @@ app.post('/video2gif', gifUpload.single('video'), async (req, res) => {
     res.setHeader('Content-Length', buffer.length);
     res.send(buffer);
 
-    // Cleanup
-    fs.unlinkSync(inputPath);
-    fs.unlinkSync(outputPath);
-
   } catch (error) {
     console.error('GIF/Sticker error:', error);
     res.status(500).send(`Conversion failed: ${error.message}`);
+  } finally {
+    cleanup();
   }
 });
 
