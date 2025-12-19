@@ -450,8 +450,9 @@ app.post('/video2gif', gifUpload.single('video'), async (req, res) => {
 
     let command;
     if (format === 'mp4') {
-      // Видео-стикер: без звука, 480p, 30fps
-      command = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -an -vf "fps=${fps},scale=${width}:-1" -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`;
+      // force_original_aspect_ratio=decrease гарантирует, что мы не вылезем за пределы width
+      // trunc(ih/2)*2 гарантирует четное число для высоты
+      command = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -an -vf "fps=${fps},scale=${width}:trunc(ow/a/2)*2" -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`;
     } else {
       // GIF: двухпроходная генерация для качества
       const palette = `/tmp/palette-${Date.now()}.png`;
