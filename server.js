@@ -452,12 +452,12 @@ app.post('/video2gif', gifUpload.single('video'), async (req, res) => {
     if (format === 'mp4') {
       // force_original_aspect_ratio=decrease гарантирует, что мы не вылезем за пределы width
       // trunc(ih/2)*2 гарантирует четное число для высоты
-      command = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -an -vf "fps=${fps},scale=${width}:trunc(ow/a/2)*2" -c:v libx264 -pix_fmt yuv420p -y "${outputPath}"`;
+      command = `ffmpeg -ss ${start} -t 5 -i "${inputPath}" -an -vf "fps=${fps},scale=${width}:-2" -c:v libx264 -pix_fmt yuv420p -preset superfast -y "${outputPath}"`;
     } else {
       // GIF: двухпроходная генерация для качества
       const palette = `/tmp/palette-${Date.now()}.png`;
-      const genPalette = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -vf "fps=${fps},scale=${width}:-1:flags=lanczos,palettegen" -y "${palette}"`;
-      const genGif = `ffmpeg -i "${inputPath}" -ss ${start} -to ${end} -i "${palette}" -lavfi "fps=${fps},scale=${width}:-1:flags=lanczos [x]; [x][1:v] paletteuse" -y "${outputPath}"`;
+      const genPalette = `ffmpeg -ss ${start} -t 5 -i "${inputPath}" -vf "fps=${fps},scale=${width}:-1:flags=lanczos,palettegen" -y "${palette}"`;
+      const genGif = `ffmpeg -ss ${start} -t 5 -i "${inputPath}" -i "${palette}" -lavfi "fps=${fps},scale=${width}:-1:flags=lanczos [x]; [x][1:v] paletteuse" -y "${outputPath}"`;
 
       await new Promise((resolve, reject) => {
         exec(genPalette, (e1, _, stderr1) => {
